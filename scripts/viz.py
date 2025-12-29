@@ -3328,21 +3328,41 @@ def build_backtest_trade_figure(trade: pd.Series) -> go.Figure:
         exit_time=exit_time.to_pydatetime() if hasattr(exit_time, "to_pydatetime") else exit_time,
     )
 
-    if bars_1min is None or bars_1min.empty:
-        # Make this failure actionable in Streamlit logs.
+    if bars_1min is None or getattr(bars_1min, "empty", True):
+        # Return an on-chart debug figure instead of raising (Streamlit may redact errors).
+        import plotly.graph_objects as go
+
         has_key = bool(os.getenv("ALPACA_API_KEY"))
         has_secret = bool(os.getenv("ALPACA_SECRET_KEY"))
-        raise ValueError(
-            "No 1-minute bars returned.\n"
-            f"symbol={symbol}\n"
-            f"window_et={entry_time} -> {exit_time}\n"
-            f"alpaca_keys_present=ALPACA_API_KEY:{has_key}, ALPACA_SECRET_KEY:{has_secret}\n"
+
+        msg = (
+            "NO 1-MINUTE BARS RETURNED\n\n"
+            f"symbol: {symbol}\n"
+            f"window_et: {entry_time} -> {exit_time}\n"
+            f"alpaca_keys_present: ALPACA_API_KEY={has_key}, ALPACA_SECRET_KEY={has_secret}\n\n"
             "Most common causes:\n"
-            "  - Alpaca keys missing/incorrect (Streamlit Secrets not set)\n"
-            "  - Minute-bar history not available for this symbol/date on your plan\n"
-            "  - Date is a holiday/weekend or symbol had no trading minutes\n"
-            "  - Timezone mismatch (trade timestamps not ET / not parseable)\n"
+            "• Alpaca keys missing/incorrect (Streamlit Secrets not set)\n"
+            "• Minute-bar history not available for this symbol/date on your plan\n"
+            "• Holiday/weekend or no trading minutes in window\n"
+            "• Timezone mismatch (trade timestamps not ET / not parseable)\n"
         )
+
+        fig = go.Figure()
+        fig.add_annotation(
+            text=msg,
+            x=0.5, y=0.5,
+            xref="paper", yref="paper",
+            showarrow=False,
+            align="left",
+            font=dict(size=14),
+        )
+        fig.update_layout(
+            title="Chart unavailable (no bars)",
+            xaxis=dict(visible=False),
+            yaxis=dict(visible=False),
+            margin=dict(l=40, r=40, t=60, b=40),
+        )
+        return fig
 
     bars_15min = aggregate_to_15min_fn(bars_1min)
     fvgs = detect_fvgs_15min_fn(bars_15min)
@@ -3361,6 +3381,7 @@ def build_backtest_trade_figure(trade: pd.Series) -> go.Figure:
         tp_adjustments_list,
     )
     return fig
+
 
 
 # =============================================================================

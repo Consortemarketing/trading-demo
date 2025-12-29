@@ -3209,55 +3209,77 @@ def run_backtest_visualization():
                 print(f"\n   Chart displayed for {symbol_input} trade on {trade.get('backtest_date', 'N/A')}")
 
 def build_backtest_trade_figure(trade: pd.Series) -> go.Figure:
-    """
-    Streamlit-friendly helper:
-    Given one backtest trade row (pd.Series), fetch bars + build the Plotly figure.
-    This avoids any CLI input() logic.
-    """
-    # Fetch 1-minute bars window based on trade status
-    entry_time = trade.get('entry_datetime')
-    exit_time = trade.get('exit_datetime')
+    # --- Guardrails: ensure required functions exist in this module ---
+    required = [
+        "fetch_1min_bars_for_trade",
+        "aggregate_to_15min",
+        "detect_fvgs_15min",
+        "calculate_tpsl_levels_backtest",
+        "create_backtest_trade_chart",
+    ]
+    missing = [name for name in required if name not in globals()]
+    if missing:
+        raise NameError(
+            "Missing required function(s) in viz.py scope: "
+            + ", ".join(missing)
+            + ".\n"
+            "This usually means the function is named differently, or defined inside main()/if __name__ == '__main__'."
+        )
 
-    trade_result_str = str(trade.get('result', '')).upper()
+    fetch_1min_bars_for_trade = globals()["fetch_1min_bars_for_trade"]
+    aggregate_to_15min = globals()["aggregate_to_15min"]
+    detect_fvgs_15min = globals()["detect_fvgs_15min"]
+    calculate_tpsl_levels_backtest = globals()["calculate_tpsl_levels_backtest"]
+    create_backtest_trade_chart = globals()["create_backtest_trade_chart"]
+
+    # --- Determine times ---
+    entry_time = trade.get("entry_datetime")
+    exit_time = trade.get("exit_datetime")
+
+    trade_result_str = str(trade.get("result", "")).upper()
     is_unfilled_trade = (
         trade_result_str in (
-            'NOT FILLED', 'UNFILLED', 'EXPIRED',
-            'REVERSAL_CONFIRMATION_EXPIRED', 'REVERSAL_DEEP_RETRACE',
-            'PATTERN EXPIRED BEFORE ENTRY'
+            "NOT FILLED", "UNFILLED", "EXPIRED",
+            "REVERSAL_CONFIRMATION_EXPIRED", "REVERSAL_DEEP_RETRACE",
+            "PATTERN EXPIRED BEFORE ENTRY",
         )
         or pd.isna(entry_time) or pd.isna(exit_time)
     )
 
     if is_unfilled_trade:
-        # For unfilled trades, use pattern timestamp for bar window
-        pattern_ts = trade.get('c1_datetime') or trade.get('sweep_candle_datetime')
+        pattern_ts = trade.get("c1_datetime") or trade.get("sweep_candle_datetime")
         if pattern_ts is None or pd.isna(pattern_ts):
-            raise ValueError("Unfilled trade: cannot determine pattern timestamp (c1_datetime / sweep_candle_datetime).")
+            raise ValueError(
+                "Unfilled trade: cannot determine pattern timestamp "
+                "(c1_datetime / sweep_candle_datetime)."
+            )
         entry_time = pattern_ts
         exit_time = pattern_ts
 
-    # Fetch 1-min bars using your existing function
+    # --- Fetch and build chart ---
     bars_1min = fetch_1min_bars_for_trade(
-        symbol=trade.get('symbol'),
+        symbol=trade.get("symbol"),
         entry_time=entry_time,
-        exit_time=exit_time
+        exit_time=exit_time,
     )
     if bars_1min is None or bars_1min.empty:
         raise ValueError("No 1-minute bar data returned for this trade window.")
 
-    # Aggregate to 15-min bars
     bars_15min = aggregate_to_15min(bars_1min)
-
-    # Detect FVGs on 15-min timeframe
     fvgs = detect_fvgs_15min(bars_15min)
 
-    # Calculate TP/SL levels from backtest data
-    tpsl_levels, stop_adjustments_list, tp_adjustments_list = calculate_tpsl_levels_backtest(trade, bars_1min)
+    tpsl_levels, stop_adjustments_list, tp_adjustments_list = calculate_tpsl_levels_backtest(
+        trade, bars_1min
+    )
 
-    # Build figure
     fig = create_backtest_trade_chart(
-        trade, bars_1min, bars_15min, fvgs, tpsl_levels,
-        stop_adjustments_list, tp_adjustments_list
+        trade,
+        bars_1min,
+        bars_15min,
+        fvgs,
+        tpsl_levels,
+        stop_adjustments_list,
+        tp_adjustments_list,
     )
     return fig
 

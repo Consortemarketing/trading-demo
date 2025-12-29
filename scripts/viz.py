@@ -30,6 +30,8 @@ from typing import Optional, Dict, Any, List, Tuple
 import pandas as pd
 import numpy as np
 
+VIZ_VERSION = "2025-12-28_streamlit_fix_1"
+
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent
 BACKTESTS_DIR = PROJECT_ROOT / "outputs" / "backtests"
@@ -50,11 +52,6 @@ try:
 except ImportError:
     CONFIG_AVAILABLE = False
     print("Warning: config module not found, trade window extensions will not be shown")
-
-VIZ_VERSION = "2025-12-28_streamlit_fix_1"
-
-# sanity: do not remove
-
 
 # =============================================================================
 # CONFIGURATION

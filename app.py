@@ -1,61 +1,108 @@
-import os
 from pathlib import Path
+import os
 import streamlit as st
+import pandas as pd
 
-# Import your existing script as a module
-import scripts.viz
+# Import your existing viz module
+from scripts import viz
 
 st.set_page_config(page_title="Trading Algo Demo", layout="wide")
 
-st.title("Trading Algorithm Demo")
-st.caption("Select a backtest file + a trade and render the interactive Plotly chart.")
-
-# ---- Secrets -> env vars (so viz.py can keep using os.getenv) ----
-# In Community Cloud, you'll set these in the Secrets UI (Step 7).
+# -----------------------------------------------------------------------------
+# Secrets -> env vars (so viz.py can keep using os.getenv)
+# -----------------------------------------------------------------------------
 if "ALPACA_API_KEY" in st.secrets:
     os.environ["ALPACA_API_KEY"] = st.secrets["ALPACA_API_KEY"]
 if "ALPACA_SECRET_KEY" in st.secrets:
     os.environ["ALPACA_SECRET_KEY"] = st.secrets["ALPACA_SECRET_KEY"]
 
-# ---- Locate backtest CSVs exactly where viz.py expects them ----
-project_root = Path(__file__).parent
-backtests_dir = project_root / "outputs" / "backtests"
-csv_files = sorted(backtests_dir.glob("*.csv"))
+st.title("Trading Algorithm Demo")
+st.caption("Pick a backtest CSV, select a symbol + trade, and view the Plotly chart.")
 
+# -----------------------------------------------------------------------------
+# Locate CSV files (use viz.BACKTESTS_DIR so paths stay consistent)
+# -----------------------------------------------------------------------------
+backtests_dir = Path(viz.BACKTESTS_DIR).resolve()
+
+with st.expander("Debug: filesystem paths", expanded=False):
+    st.write("viz.BACKTESTS_DIR:", str(backtests_dir))
+    st.write("Exists:", backtests_dir.exists())
+    if backtests_dir.exists():
+        st.write("All files:", [p.name for p in backtests_dir.glob("*")])
+        st.write("CSV files:", [p.name for p in backtests_dir.glob("*.csv")])
+
+csv_files = sorted(backtests_dir.glob("*.csv"))
 if not csv_files:
     st.error(f"No CSV files found in {backtests_dir}")
     st.stop()
 
-csv_choice = st.selectbox("Backtest CSV", csv_files, format_func=lambda p: p.name)
+csv_path = st.selectbox("Backtest CSV", csv_files, format_func=lambda p: p.name)
 
-df = viz.load_backtest_csv(csv_choice)
+# -----------------------------------------------------------------------------
+# Load the CSV using your existing loader
+# -----------------------------------------------------------------------------
+df = viz.load_backtest_csv(csv_path)
 
-# Choose symbol if present
+st.write(f"Loaded **{len(df)}** rows from `{csv_path.name}`")
+
+# -----------------------------------------------------------------------------
+# Symbol selection (if present)
+# -----------------------------------------------------------------------------
 if "symbol" in df.columns:
     symbols = sorted(df["symbol"].dropna().unique().tolist())
     symbol = st.selectbox("Symbol", symbols)
-    df_view = df[df["symbol"] == symbol].copy()
+    df_symbol = df[df["symbol"] == symbol].copy()
 else:
-    df_view = df.copy()
+    st.warning("No `symbol` column found. Showing all trades.")
+    df_symbol = df.copy()
 
-# Choose trade_id if present
-if "trade_id" in df_view.columns:
-    trade_ids = df_view["trade_id"].dropna().unique().tolist()
-    trade_id = st.selectbox("Trade ID", trade_ids)
-    trade = viz.get_trade_by_id(df_view, trade_id)
-    if trade is None:
-        st.warning("Trade not found.")
-        st.stop()
+# -----------------------------------------------------------------------------
+# Trade selection
+# Use viz.get_trades_for_symbol if available, else fallback to the dataframe
+# -----------------------------------------------------------------------------
+if hasattr(viz, "get_trades_for_symbol") and "symbol" in df.columns:
+    trades_df = viz.get_trades_for_symbol(df, symbol)  # expected to return a DF sorted
 else:
-    st.error("This CSV doesn't have a trade_id column.")
+    trades_df = df_symbol
+
+if trades_df is None or trades_df.empty:
+    st.error("No trades found for that selection.")
     st.stop()
 
-# Render chart (your viz.py likely has a chart builder; common names below)
-# If your function name differs, update this one line.
-fig = viz.build_trade_figure(trade, df_view) if hasattr(viz, "build_trade_figure") else None
+# Make a display label list
+def trade_label(row: pd.Series) -> str:
+    direction = str(row.get("direction", "n/a")).upper()
+    pattern = str(row.get("pattern_type", row.get("pattern", "FVG")))
+    # try to display something timestamp-y
+    ts = row.get("c1_timestamp", row.get("c1_datetime", row.get("sweep_candle_timestamp", row.get("sweep_candle_datetime", ""))))
+    pnl = row.get("pnl_dollars", row.get("pnl", ""))
+    try:
+        pnl_str = f"{float(pnl):+.2f}"
+    except Exception:
+        pnl_str = str(pnl)
+    return f"{direction:5s} | {pattern:15s} | {ts} | PnL {pnl_str}"
 
-if fig is None:
-    st.error("Couldn't find a figure builder in viz.py. Search for the function that returns a Plotly Figure and call it here.")
-    st.stop()
+trade_indices = list(trades_df.index)
+
+selected_idx = st.selectbox(
+    "Trade",
+    trade_indices,
+    format_func=lambda idx: trade_label(trades_df.loc[idx])
+)
+
+trade = trades_df.loc[selected_idx]
+
+# Show trade details quickly
+with st.expander("Trade details", expanded=False):
+    st.dataframe(trade.to_frame("value"))
+
+# -----------------------------------------------------------------------------
+# Build and display chart
+# This calls a new helper we’ll add to viz.py below: build_backtest_trade_figure()
+# -----------------------------------------------------------------------------
+st.subheader("Chart")
+
+with st.spinner("Building chart (fetching bars, aggregating, detecting FVGs, calculating TP/SL levels)..."):
+    fig = viz.build_backtest_trade_figure(trade)
 
 st.plotly_chart(fig, use_container_width=True)

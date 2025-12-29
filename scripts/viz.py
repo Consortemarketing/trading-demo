@@ -30,7 +30,7 @@ from typing import Optional, Dict, Any, List, Tuple
 import pandas as pd
 import numpy as np
 
-VIZ_VERSION = "2025-12-28_streamlit_fix_1"
+VIZ_VERSION = "2025-12-28_streamlit_fix_2"
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -3328,13 +3328,11 @@ def build_backtest_trade_figure(trade: pd.Series) -> go.Figure:
         exit_time=exit_time.to_pydatetime() if hasattr(exit_time, "to_pydatetime") else exit_time,
     )
 
-    if bars_1min is None or getattr(bars_1min, "empty", True):
+    if bars_1min is None or bars_1min.empty:
         # Return an on-chart debug figure instead of raising (Streamlit may redact errors).
         import plotly.graph_objects as go
-
         has_key = bool(os.getenv("ALPACA_API_KEY"))
         has_secret = bool(os.getenv("ALPACA_SECRET_KEY"))
-
         msg = (
             "NO 1-MINUTE BARS RETURNED\n\n"
             f"symbol: {symbol}\n"
@@ -3346,7 +3344,6 @@ def build_backtest_trade_figure(trade: pd.Series) -> go.Figure:
             "• Holiday/weekend or no trading minutes in window\n"
             "• Timezone mismatch (trade timestamps not ET / not parseable)\n"
         )
-
         fig = go.Figure()
         fig.add_annotation(
             text=msg,
@@ -3381,7 +3378,6 @@ def build_backtest_trade_figure(trade: pd.Series) -> go.Figure:
         tp_adjustments_list,
     )
     return fig
-
 
 
 # =============================================================================

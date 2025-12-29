@@ -106,7 +106,15 @@ with st.expander("Trade details", expanded=False):
 # -----------------------------------------------------------------------------
 st.subheader("Chart")
 
-with st.spinner("Building chart (fetching bars, aggregating, detecting FVGs, calculating TP/SL levels)..."):
-    fig = viz.build_backtest_trade_figure(trade)
+try:
+    with st.spinner(
+        "Building chart (fetching bars, aggregating, detecting FVGs, calculating TP/SL levels)..."
+    ):
+        fig = viz.build_backtest_trade_figure(trade)
 
-st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True)
+
+except Exception as e:
+    st.exception(e)
+    st.stop()
+

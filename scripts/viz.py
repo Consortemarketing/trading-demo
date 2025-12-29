@@ -811,6 +811,22 @@ def fetch_bars_for_trade(
     
     return None
 
+def fetch_1min_bars_for_trade(
+    symbol: str,
+    entry_time: datetime,
+    exit_time: datetime
+) -> Optional[pd.DataFrame]:
+    """
+    Convenience wrapper expected by build_backtest_trade_figure().
+    Uses the existing fetch_bars_for_trade() implementation.
+    """
+    return fetch_bars_for_trade(
+        symbol=symbol,
+        entry_time=entry_time,
+        exit_time=exit_time,
+        timeframe="1Min"
+    )
+
 
 # =============================================================================
 # 15-MINUTE BAR AGGREGATION
@@ -3254,7 +3270,8 @@ def build_backtest_trade_figure(trade: pd.Series) -> go.Figure:
                 "(c1_datetime / sweep_candle_datetime)."
             )
         entry_time = pattern_ts
-        exit_time = pattern_ts
+        exit_time = pattern_ts + timedelta(hours=2)  # show context like your CLI flow
+
 
     # --- Fetch and build chart ---
     bars_1min = fetch_1min_bars_for_trade(

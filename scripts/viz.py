@@ -3226,6 +3226,21 @@ def run_backtest_visualization():
                 print(f"\n   Chart displayed for {symbol_input} trade on {trade.get('backtest_date', 'N/A')}")
 
 def build_backtest_trade_figure(trade: pd.Series) -> go.Figure:
+    """
+    Streamlit-friendly entry point.
+
+    Builds a full Plotly figure for a single backtest trade row by:
+      - determining an appropriate time window (filled vs unfilled)
+      - fetching 1-minute bars (cache -> API)
+      - aggregating to 15-minute, detecting FVGs
+      - calculating TP/SL adjustment levels
+      - rendering the chart
+
+    Raises a ValueError with actionable diagnostics if no bars are returned.
+    """
+    import pytz
+    ET_LOCAL = pytz.timezone("America/New_York")
+
     # --- Guardrails: ensure required functions exist in this module ---
     required = [
         "fetch_1min_bars_for_trade",
@@ -3243,15 +3258,41 @@ def build_backtest_trade_figure(trade: pd.Series) -> go.Figure:
             "This usually means the function is named differently, or defined inside main()/if __name__ == '__main__'."
         )
 
-    fetch_1min_bars_for_trade = globals()["fetch_1min_bars_for_trade"]
-    aggregate_to_15min = globals()["aggregate_to_15min"]
-    detect_fvgs_15min = globals()["detect_fvgs_15min"]
-    calculate_tpsl_levels_backtest = globals()["calculate_tpsl_levels_backtest"]
-    create_backtest_trade_chart = globals()["create_backtest_trade_chart"]
+    fetch_1min_bars_for_trade_fn = globals()["fetch_1min_bars_for_trade"]
+    aggregate_to_15min_fn = globals()["aggregate_to_15min"]
+    detect_fvgs_15min_fn = globals()["detect_fvgs_15min"]
+    calculate_tpsl_levels_backtest_fn = globals()["calculate_tpsl_levels_backtest"]
+    create_backtest_trade_chart_fn = globals()["create_backtest_trade_chart"]
 
-    # --- Determine times ---
-    entry_time = trade.get("entry_datetime")
-    exit_time = trade.get("exit_datetime")
+    def _to_et(dt):
+        """Normalize datetime-like values to timezone-aware America/New_York."""
+        if dt is None or (hasattr(pd, "isna") and pd.isna(dt)):
+            return None
+        try:
+            dt = pd.to_datetime(dt, errors="coerce")
+        except Exception:
+            return None
+        if pd.isna(dt):
+            return None
+        # pandas Timestamp -> timezone-aware
+        if getattr(dt, "tzinfo", None) is None and getattr(dt, "tz", None) is None:
+            # Treat naive timestamps as ET (your backtests are ET)
+            return dt.tz_localize(ET_LOCAL, ambiguous="NaT", nonexistent="NaT")
+        # Already tz-aware
+        try:
+            return dt.tz_convert(ET_LOCAL)
+        except Exception:
+            # Some tz-aware objects may not support tz_convert cleanly
+            try:
+                return pd.Timestamp(dt).tz_convert(ET_LOCAL)
+            except Exception:
+                return dt
+
+    symbol = trade.get("symbol", "UNKNOWN")
+
+    # --- Determine times from row ---
+    entry_time = _to_et(trade.get("entry_datetime"))
+    exit_time = _to_et(trade.get("exit_datetime"))
 
     trade_result_str = str(trade.get("result", "")).upper()
     is_unfilled_trade = (
@@ -3260,37 +3301,57 @@ def build_backtest_trade_figure(trade: pd.Series) -> go.Figure:
             "REVERSAL_CONFIRMATION_EXPIRED", "REVERSAL_DEEP_RETRACE",
             "PATTERN EXPIRED BEFORE ENTRY",
         )
-        or pd.isna(entry_time) or pd.isna(exit_time)
+        or entry_time is None or exit_time is None
     )
 
+    # --- Build a robust window ---
+    # NOTE: fetch_bars_for_trade() ultimately fetches the full market day for the date of entry_time,
+    # but we still set a good entry/exit to avoid edge cases and to improve error messages.
     if is_unfilled_trade:
-        pattern_ts = trade.get("c1_datetime") or trade.get("sweep_candle_datetime")
-        if pattern_ts is None or pd.isna(pattern_ts):
+        pattern_ts = _to_et(trade.get("c1_datetime") or trade.get("sweep_candle_datetime"))
+        if pattern_ts is None:
             raise ValueError(
-                "Unfilled trade: cannot determine pattern timestamp "
-                "(c1_datetime / sweep_candle_datetime)."
+                "Unfilled trade: cannot determine pattern timestamp (c1_datetime / sweep_candle_datetime)."
             )
-        entry_time = pattern_ts
-        exit_time = pattern_ts + timedelta(hours=2)  # show context like your CLI flow
-
+        # 4-hour context window centered on the pattern
+        entry_time = pattern_ts - timedelta(hours=2)
+        exit_time = pattern_ts + timedelta(hours=2)
+    else:
+        # Add context padding so we don't request an ultra-short window
+        entry_time = entry_time - timedelta(hours=1)
+        exit_time = exit_time + timedelta(hours=1)
 
     # --- Fetch and build chart ---
-    bars_1min = fetch_1min_bars_for_trade(
-        symbol=trade.get("symbol"),
-        entry_time=entry_time,
-        exit_time=exit_time,
+    bars_1min = fetch_1min_bars_for_trade_fn(
+        symbol=symbol,
+        entry_time=entry_time.to_pydatetime() if hasattr(entry_time, "to_pydatetime") else entry_time,
+        exit_time=exit_time.to_pydatetime() if hasattr(exit_time, "to_pydatetime") else exit_time,
     )
+
     if bars_1min is None or bars_1min.empty:
-        raise ValueError("No 1-minute bar data returned for this trade window.")
+        # Make this failure actionable in Streamlit logs.
+        has_key = bool(os.getenv("ALPACA_API_KEY"))
+        has_secret = bool(os.getenv("ALPACA_SECRET_KEY"))
+        raise ValueError(
+            "No 1-minute bars returned.\n"
+            f"symbol={symbol}\n"
+            f"window_et={entry_time} -> {exit_time}\n"
+            f"alpaca_keys_present=ALPACA_API_KEY:{has_key}, ALPACA_SECRET_KEY:{has_secret}\n"
+            "Most common causes:\n"
+            "  - Alpaca keys missing/incorrect (Streamlit Secrets not set)\n"
+            "  - Minute-bar history not available for this symbol/date on your plan\n"
+            "  - Date is a holiday/weekend or symbol had no trading minutes\n"
+            "  - Timezone mismatch (trade timestamps not ET / not parseable)\n"
+        )
 
-    bars_15min = aggregate_to_15min(bars_1min)
-    fvgs = detect_fvgs_15min(bars_15min)
+    bars_15min = aggregate_to_15min_fn(bars_1min)
+    fvgs = detect_fvgs_15min_fn(bars_15min)
 
-    tpsl_levels, stop_adjustments_list, tp_adjustments_list = calculate_tpsl_levels_backtest(
+    tpsl_levels, stop_adjustments_list, tp_adjustments_list = calculate_tpsl_levels_backtest_fn(
         trade, bars_1min
     )
 
-    fig = create_backtest_trade_chart(
+    fig = create_backtest_trade_chart_fn(
         trade,
         bars_1min,
         bars_15min,

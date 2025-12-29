@@ -1,6 +1,12 @@
 from pathlib import Path
 import os
 import streamlit as st
+
+st.write("viz.VIZ_VERSION =", getattr(viz, "VIZ_VERSION", "MISSING"))
+st.write("has fetch_1min_bars_for_trade =", hasattr(viz, "fetch_1min_bars_for_trade"))
+st.write("viz module path =", getattr(viz, "__file__", "unknown"))
+
+
 import pandas as pd
 
 # Import your existing viz module

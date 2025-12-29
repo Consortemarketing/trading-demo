@@ -51,6 +51,10 @@ except ImportError:
     CONFIG_AVAILABLE = False
     print("Warning: config module not found, trade window extensions will not be shown")
 
+VIZ_VERSION = "2025-12-28_streamlit_fix_1"
+
+# sanity: do not remove
+
 
 # =============================================================================
 # CONFIGURATION
@@ -3332,6 +3336,17 @@ def main():
             run_backtest_visualization()
         else:
             print("Invalid selection. Please enter 1, 2, or 0.")
+
+# -------------------------------------------------------------------
+# Streamlit compatibility alias (must be at module scope)
+# -------------------------------------------------------------------
+def fetch_1min_bars_for_trade(symbol, entry_time, exit_time):
+    return fetch_bars_for_trade(
+        symbol=symbol,
+        entry_time=entry_time,
+        exit_time=exit_time,
+        timeframe="1Min",
+    )
 
 
 if __name__ == '__main__':

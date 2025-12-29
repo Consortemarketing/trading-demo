@@ -30,7 +30,7 @@ from typing import Optional, Dict, Any, List, Tuple
 import pandas as pd
 import numpy as np
 
-VIZ_VERSION = "2025-12-28_streamlit_fix_2"
+VIZ_VERSION = "2025-12-28_streamlit_fix_3"
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -3236,7 +3236,8 @@ def build_backtest_trade_figure(trade: pd.Series) -> go.Figure:
       - calculating TP/SL adjustment levels
       - rendering the chart
 
-    Raises a ValueError with actionable diagnostics if no bars are returned.
+    Returns a diagnostic figure with error details if no bars are available,
+    instead of raising an exception (Streamlit may redact error messages).
     """
     import pytz
     ET_LOCAL = pytz.timezone("America/New_York")
@@ -3310,9 +3311,31 @@ def build_backtest_trade_figure(trade: pd.Series) -> go.Figure:
     if is_unfilled_trade:
         pattern_ts = _to_et(trade.get("c1_datetime") or trade.get("sweep_candle_datetime"))
         if pattern_ts is None:
-            raise ValueError(
-                "Unfilled trade: cannot determine pattern timestamp (c1_datetime / sweep_candle_datetime)."
+            # Return diagnostic figure instead of raising (Streamlit redacts errors)
+            fig = go.Figure()
+            fig.add_annotation(
+                text=(
+                    "CANNOT DETERMINE TRADE TIMESTAMP\n\n"
+                    f"symbol: {symbol}\n"
+                    f"result: {trade_result_str}\n\n"
+                    "For unfilled trades, need either:\n"
+                    "• c1_datetime (FVG patterns)\n"
+                    "• sweep_candle_datetime (Sweep patterns)\n\n"
+                    "Check that your backtest CSV has these columns populated."
+                ),
+                x=0.5, y=0.5,
+                xref="paper", yref="paper",
+                showarrow=False,
+                align="left",
+                font=dict(size=14),
             )
+            fig.update_layout(
+                title="Chart unavailable (missing timestamp)",
+                xaxis=dict(visible=False),
+                yaxis=dict(visible=False),
+                margin=dict(l=40, r=40, t=60, b=40),
+            )
+            return fig
         # 4-hour context window centered on the pattern
         entry_time = pattern_ts - timedelta(hours=2)
         exit_time = pattern_ts + timedelta(hours=2)
@@ -3411,18 +3434,6 @@ def main():
             run_backtest_visualization()
         else:
             print("Invalid selection. Please enter 1, 2, or 0.")
-
-# -------------------------------------------------------------------
-# Streamlit compatibility alias (must be at module scope)
-# -------------------------------------------------------------------
-def fetch_1min_bars_for_trade(symbol, entry_time, exit_time):
-    return fetch_bars_for_trade(
-        symbol=symbol,
-        entry_time=entry_time,
-        exit_time=exit_time,
-        timeframe="1Min",
-    )
-
 
 if __name__ == '__main__':
     main()

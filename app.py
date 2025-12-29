@@ -3,7 +3,7 @@ from pathlib import Path
 import streamlit as st
 
 # Import your existing script as a module
-import viz
+import scripts.viz
 
 st.set_page_config(page_title="Trading Algo Demo", layout="wide")
 

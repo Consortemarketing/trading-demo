@@ -30,12 +30,8 @@ from typing import Optional, Dict, Any, List, Tuple
 import pandas as pd
 import numpy as np
 
-VIZ_VERSION = "2025-12-28_streamlit_fix_3"
-
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent
-BACKTESTS_DIR = PROJECT_ROOT / "outputs" / "backtests"
-
 sys.path.insert(0, str(PROJECT_ROOT))
 
 try:
@@ -53,11 +49,15 @@ except ImportError:
     CONFIG_AVAILABLE = False
     print("Warning: config module not found, trade window extensions will not be shown")
 
+
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
 
+VIZ_VERSION = "2025-12-28_streamlit_fix_4"
+
 TRADING_PARAMS_DIR = PROJECT_ROOT / "outputs" / "optimization" / "trading_parameters"
+BACKTESTS_DIR = PROJECT_ROOT / "outputs" / "backtests"
 CSV_PATTERN = "tpsl_trade_details_*.csv"
 BACKTEST_PATTERN = "backtest*.csv"
 
@@ -811,22 +811,6 @@ def fetch_bars_for_trade(
     print(f"           - API rate limiting")
     
     return None
-
-def fetch_1min_bars_for_trade(
-    symbol: str,
-    entry_time: datetime,
-    exit_time: datetime
-) -> Optional[pd.DataFrame]:
-    """
-    Convenience wrapper expected by build_backtest_trade_figure().
-    Uses the existing fetch_bars_for_trade() implementation.
-    """
-    return fetch_bars_for_trade(
-        symbol=symbol,
-        entry_time=entry_time,
-        exit_time=exit_time,
-        timeframe="1Min"
-    )
 
 
 # =============================================================================
@@ -3225,10 +3209,28 @@ def run_backtest_visualization():
                 
                 print(f"\n   Chart displayed for {symbol_input} trade on {trade.get('backtest_date', 'N/A')}")
 
+
+# =============================================================================
+# STREAMLIT COMPATIBILITY FUNCTIONS
+# =============================================================================
+
+def fetch_1min_bars_for_trade(symbol: str, entry_time: datetime, exit_time: datetime) -> Optional[pd.DataFrame]:
+    """
+    Streamlit-compatible alias for fetch_bars_for_trade.
+    Fetches 1-minute bars for a trade's time window.
+    """
+    return fetch_bars_for_trade(
+        symbol=symbol,
+        entry_time=entry_time,
+        exit_time=exit_time,
+        timeframe="1Min"
+    )
+
+
 def build_backtest_trade_figure(trade: pd.Series) -> go.Figure:
     """
-    Streamlit-friendly entry point.
-
+    Streamlit-friendly entry point for building trade charts.
+    
     Builds a full Plotly figure for a single backtest trade row by:
       - determining an appropriate time window (filled vs unfilled)
       - fetching 1-minute bars (cache -> API)
@@ -3236,38 +3238,25 @@ def build_backtest_trade_figure(trade: pd.Series) -> go.Figure:
       - calculating TP/SL adjustment levels
       - rendering the chart
 
-    Returns a diagnostic figure with error details if no bars are available,
+    Returns a diagnostic figure with error details if data is unavailable,
     instead of raising an exception (Streamlit may redact error messages).
     """
     import pytz
     ET_LOCAL = pytz.timezone("America/New_York")
 
-    # --- Guardrails: ensure required functions exist in this module ---
-    required = [
-        "fetch_1min_bars_for_trade",
-        "aggregate_to_15min",
-        "detect_fvgs_15min",
-        "calculate_tpsl_levels_backtest",
-        "create_backtest_trade_chart",
-    ]
-    missing = [name for name in required if name not in globals()]
-    if missing:
-        raise NameError(
-            "Missing required function(s) in viz.py scope: "
-            + ", ".join(missing)
-            + ".\n"
-            "This usually means the function is named differently, or defined inside main()/if __name__ == '__main__'."
-        )
-
-    fetch_1min_bars_for_trade_fn = globals()["fetch_1min_bars_for_trade"]
-    aggregate_to_15min_fn = globals()["aggregate_to_15min"]
-    detect_fvgs_15min_fn = globals()["detect_fvgs_15min"]
-    calculate_tpsl_levels_backtest_fn = globals()["calculate_tpsl_levels_backtest"]
-    create_backtest_trade_chart_fn = globals()["create_backtest_trade_chart"]
-
     def _to_et(dt):
         """Normalize datetime-like values to timezone-aware America/New_York."""
-        if dt is None or (hasattr(pd, "isna") and pd.isna(dt)):
+        if dt is None:
+            return None
+        # Handle 'N/A' strings
+        if isinstance(dt, str):
+            if dt.upper() in ('N/A', 'NA', 'NAN', 'NONE', ''):
+                return None
+            try:
+                dt = pd.to_datetime(dt, errors="coerce")
+            except Exception:
+                return None
+        if hasattr(pd, "isna") and pd.isna(dt):
             return None
         try:
             dt = pd.to_datetime(dt, errors="coerce")
@@ -3277,50 +3266,83 @@ def build_backtest_trade_figure(trade: pd.Series) -> go.Figure:
             return None
         # pandas Timestamp -> timezone-aware
         if getattr(dt, "tzinfo", None) is None and getattr(dt, "tz", None) is None:
-            # Treat naive timestamps as ET (your backtests are ET)
-            return dt.tz_localize(ET_LOCAL, ambiguous="NaT", nonexistent="NaT")
+            try:
+                return dt.tz_localize(ET_LOCAL, ambiguous="NaT", nonexistent="NaT")
+            except Exception:
+                return None
         # Already tz-aware
         try:
             return dt.tz_convert(ET_LOCAL)
         except Exception:
-            # Some tz-aware objects may not support tz_convert cleanly
             try:
                 return pd.Timestamp(dt).tz_convert(ET_LOCAL)
             except Exception:
                 return dt
 
     symbol = trade.get("symbol", "UNKNOWN")
+    if pd.isna(symbol):
+        symbol = "UNKNOWN"
 
     # --- Determine times from row ---
     entry_time = _to_et(trade.get("entry_datetime"))
     exit_time = _to_et(trade.get("exit_datetime"))
 
+    # Check trade result to determine if unfilled
     trade_result_str = str(trade.get("result", "")).upper()
+    filled_status = str(trade.get("filled", "")).upper()
+    
     is_unfilled_trade = (
-        trade_result_str in (
+        filled_status == "NO"
+        or trade_result_str in (
             "NOT FILLED", "UNFILLED", "EXPIRED",
             "REVERSAL_CONFIRMATION_EXPIRED", "REVERSAL_DEEP_RETRACE",
             "PATTERN EXPIRED BEFORE ENTRY",
         )
-        or entry_time is None or exit_time is None
+        or entry_time is None 
+        or exit_time is None
     )
 
     # --- Build a robust window ---
-    # NOTE: fetch_bars_for_trade() ultimately fetches the full market day for the date of entry_time,
-    # but we still set a good entry/exit to avoid edge cases and to improve error messages.
     if is_unfilled_trade:
-        pattern_ts = _to_et(trade.get("c1_datetime") or trade.get("sweep_candle_datetime"))
+        # For unfilled trades, use pattern timestamps
+        # Priority: sweep_candle_datetime > c1_datetime > c3_datetime
+        pattern_ts = None
+        for ts_field in ['sweep_candle_datetime', 'c1_datetime', 'c3_datetime']:
+            pattern_ts = _to_et(trade.get(ts_field))
+            if pattern_ts is not None:
+                break
+        
+        # Try timestamp fields if datetime fields didn't work
         if pattern_ts is None:
-            # Return diagnostic figure instead of raising (Streamlit redacts errors)
+            for ts_field in ['sweep_candle_timestamp', 'c1_timestamp', 'c3_timestamp', 'pattern_timestamp']:
+                pattern_ts = _to_et(trade.get(ts_field))
+                if pattern_ts is not None:
+                    break
+        
+        if pattern_ts is None:
+            # Last resort: try backtest_date
+            backtest_date = trade.get('backtest_date')
+            if backtest_date is not None and not pd.isna(backtest_date):
+                try:
+                    # Default to 10:00 AM if no time available
+                    pattern_ts = _to_et(f"{backtest_date} 10:00:00")
+                except Exception:
+                    pass
+        
+        if pattern_ts is None:
+            # Return diagnostic figure
             fig = go.Figure()
             fig.add_annotation(
                 text=(
                     "CANNOT DETERMINE TRADE TIMESTAMP\n\n"
                     f"symbol: {symbol}\n"
-                    f"result: {trade_result_str}\n\n"
-                    "For unfilled trades, need either:\n"
-                    "• c1_datetime (FVG patterns)\n"
-                    "• sweep_candle_datetime (Sweep patterns)\n\n"
+                    f"result: {trade_result_str}\n"
+                    f"filled: {filled_status}\n\n"
+                    "For unfilled trades, need one of:\n"
+                    "• sweep_candle_datetime/timestamp\n"
+                    "• c1_datetime/timestamp\n"
+                    "• pattern_timestamp\n"
+                    "• backtest_date\n\n"
                     "Check that your backtest CSV has these columns populated."
                 ),
                 x=0.5, y=0.5,
@@ -3336,24 +3358,24 @@ def build_backtest_trade_figure(trade: pd.Series) -> go.Figure:
                 margin=dict(l=40, r=40, t=60, b=40),
             )
             return fig
+        
         # 4-hour context window centered on the pattern
         entry_time = pattern_ts - timedelta(hours=2)
         exit_time = pattern_ts + timedelta(hours=2)
     else:
-        # Add context padding so we don't request an ultra-short window
+        # Add context padding for filled trades
         entry_time = entry_time - timedelta(hours=1)
         exit_time = exit_time + timedelta(hours=1)
 
-    # --- Fetch and build chart ---
-    bars_1min = fetch_1min_bars_for_trade_fn(
+    # --- Fetch bars ---
+    bars_1min = fetch_1min_bars_for_trade(
         symbol=symbol,
         entry_time=entry_time.to_pydatetime() if hasattr(entry_time, "to_pydatetime") else entry_time,
         exit_time=exit_time.to_pydatetime() if hasattr(exit_time, "to_pydatetime") else exit_time,
     )
 
     if bars_1min is None or bars_1min.empty:
-        # Return an on-chart debug figure instead of raising (Streamlit may redact errors).
-        import plotly.graph_objects as go
+        # Return diagnostic figure
         has_key = bool(os.getenv("ALPACA_API_KEY"))
         has_secret = bool(os.getenv("ALPACA_SECRET_KEY"))
         msg = (
@@ -3384,14 +3406,15 @@ def build_backtest_trade_figure(trade: pd.Series) -> go.Figure:
         )
         return fig
 
-    bars_15min = aggregate_to_15min_fn(bars_1min)
-    fvgs = detect_fvgs_15min_fn(bars_15min)
+    # --- Process bars and build chart ---
+    bars_15min = aggregate_to_15min(bars_1min)
+    fvgs = detect_fvgs_15min(bars_15min)
 
-    tpsl_levels, stop_adjustments_list, tp_adjustments_list = calculate_tpsl_levels_backtest_fn(
+    tpsl_levels, stop_adjustments_list, tp_adjustments_list = calculate_tpsl_levels_backtest(
         trade, bars_1min
     )
 
-    fig = create_backtest_trade_chart_fn(
+    fig = create_backtest_trade_chart(
         trade,
         bars_1min,
         bars_15min,
@@ -3434,6 +3457,7 @@ def main():
             run_backtest_visualization()
         else:
             print("Invalid selection. Please enter 1, 2, or 0.")
+
 
 if __name__ == '__main__':
     main()

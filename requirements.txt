@@ -1,0 +1,8 @@
+pandas
+numpy
+plotly
+alpaca-py
+requests
+pytz
+python-dateutil
+streamlit

@@ -31,7 +31,9 @@ import pandas as pd
 import numpy as np
 
 # Add project root to path
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).parent.parent
+BACKTESTS_DIR = PROJECT_ROOT / "outputs" / "backtests"
+
 sys.path.insert(0, str(PROJECT_ROOT))
 
 try:
@@ -55,7 +57,6 @@ except ImportError:
 # =============================================================================
 
 TRADING_PARAMS_DIR = PROJECT_ROOT / "outputs" / "optimization" / "trading_parameters"
-BACKTESTS_DIR = PROJECT_ROOT / "outputs" / "backtests"
 CSV_PATTERN = "tpsl_trade_details_*.csv"
 BACKTEST_PATTERN = "backtest*.csv"
 
@@ -3206,6 +3207,59 @@ def run_backtest_visualization():
                 show_figure_with_hover_legend(fig)
                 
                 print(f"\n   Chart displayed for {symbol_input} trade on {trade.get('backtest_date', 'N/A')}")
+
+def build_backtest_trade_figure(trade: pd.Series) -> go.Figure:
+    """
+    Streamlit-friendly helper:
+    Given one backtest trade row (pd.Series), fetch bars + build the Plotly figure.
+    This avoids any CLI input() logic.
+    """
+    # Fetch 1-minute bars window based on trade status
+    entry_time = trade.get('entry_datetime')
+    exit_time = trade.get('exit_datetime')
+
+    trade_result_str = str(trade.get('result', '')).upper()
+    is_unfilled_trade = (
+        trade_result_str in (
+            'NOT FILLED', 'UNFILLED', 'EXPIRED',
+            'REVERSAL_CONFIRMATION_EXPIRED', 'REVERSAL_DEEP_RETRACE',
+            'PATTERN EXPIRED BEFORE ENTRY'
+        )
+        or pd.isna(entry_time) or pd.isna(exit_time)
+    )
+
+    if is_unfilled_trade:
+        # For unfilled trades, use pattern timestamp for bar window
+        pattern_ts = trade.get('c1_datetime') or trade.get('sweep_candle_datetime')
+        if pattern_ts is None or pd.isna(pattern_ts):
+            raise ValueError("Unfilled trade: cannot determine pattern timestamp (c1_datetime / sweep_candle_datetime).")
+        entry_time = pattern_ts
+        exit_time = pattern_ts
+
+    # Fetch 1-min bars using your existing function
+    bars_1min = fetch_1min_bars_for_trade(
+        symbol=trade.get('symbol'),
+        entry_time=entry_time,
+        exit_time=exit_time
+    )
+    if bars_1min is None or bars_1min.empty:
+        raise ValueError("No 1-minute bar data returned for this trade window.")
+
+    # Aggregate to 15-min bars
+    bars_15min = aggregate_to_15min(bars_1min)
+
+    # Detect FVGs on 15-min timeframe
+    fvgs = detect_fvgs_15min(bars_15min)
+
+    # Calculate TP/SL levels from backtest data
+    tpsl_levels, stop_adjustments_list, tp_adjustments_list = calculate_tpsl_levels_backtest(trade, bars_1min)
+
+    # Build figure
+    fig = create_backtest_trade_chart(
+        trade, bars_1min, bars_15min, fvgs, tpsl_levels,
+        stop_adjustments_list, tp_adjustments_list
+    )
+    return fig
 
 
 # =============================================================================
